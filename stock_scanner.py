@@ -31,6 +31,9 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     logger.error("Please set environment variables when running docker")
     sys.exit(1)
 
+# Configure yfinance with better headers
+yf.set_tz_cache_location("/tmp/yfinance_cache")
+
 # Stock universe
 def load_watchlist():
     """Load watchlist from file if exists, otherwise use default"""
@@ -99,9 +102,25 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
 def analyze_stock(ticker):
     """Analyze a single stock using Pine Script logic"""
     try:
-        # Download data
-        stock = yf.Ticker(ticker)
-        df = stock.history(period="3mo", interval="1d")
+        # Download data with retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                stock = yf.Ticker(ticker)
+                df = stock.history(period="3mo", interval="1d", timeout=10)
+                
+                if not df.empty and len(df) >= 50:
+                    break
+                    
+                if attempt < max_retries - 1:
+                    time.sleep(2)  # Wait before retry
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"Retry {attempt + 1} for {ticker}: {e}")
+                    time.sleep(2)
+                else:
+                    logger.debug(f"Failed to fetch {ticker} after {max_retries} attempts")
+                    return None
         
         if df.empty or len(df) < 50:
             return None
@@ -199,6 +218,8 @@ def scan_stocks():
     logger.info("="*60)
     
     signals = []
+    successful_scans = 0
+    failed_scans = 0
     
     for ticker in WATCHLIST:
         logger.info(f"Analyzing {ticker}...")
@@ -207,8 +228,14 @@ def scan_stocks():
         if signal:
             signals.append(signal)
             logger.info(f"✅ {ticker}: {signal['signal_type']}")
+            successful_scans += 1
+        elif signal is None:
+            failed_scans += 1
         
-        time.sleep(0.5)  # Avoid rate limiting
+        # Longer delay to avoid rate limiting
+        time.sleep(1.5)
+    
+    logger.info(f"Scan complete: {successful_scans} successful, {failed_scans} failed")
     
     # Send Telegram notifications
     if signals:
