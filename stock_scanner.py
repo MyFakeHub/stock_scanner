@@ -51,8 +51,9 @@ def load_watchlist():
     
     # Default watchlist - keep it small for free API limits
     return [
-        "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", 
-        "NVDA", "META", "AMD", "NFLX", "DIS"
+        "PLTER", "NFLX", "META", "NVDA", "AMD", 
+        "CGNX", "NNE", "QCOM", "TM", "SNOW",
+        "ABM", "PENG", "QS", "LCID", "LMT"
     ]
 
 WATCHLIST = load_watchlist()
