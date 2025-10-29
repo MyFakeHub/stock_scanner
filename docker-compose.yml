@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  stock-scanner:
+    build: .
+    container_name: stock-scanner
+    restart: unless-stopped
+    environment:
+      # Telegram Configuration
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      
+      # Scanner Configuration
+      - PRICE_LIMIT=${PRICE_LIMIT:-10.0}
+      - SCAN_INTERVAL=${SCAN_INTERVAL:-300}
+      
+      # Timezone (optional, adjust to your location)
+      - TZ=Europe/Berlin
+    
+    volumes:
+      # Persist logs
+      - ./logs:/app/logs
+      
+      # Optional: Mount custom watchlist
+      - ./watchlist.txt:/app/watchlist.txt:ro
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Health check to ensure scanner is running
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('/tmp/scanner_running') else 1)"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
