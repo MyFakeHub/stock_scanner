@@ -302,10 +302,11 @@ def main():
     min_scan_time = len(WATCHLIST) * 15  # 15 seconds per stock
     logger.info(f"⏱️  Minimum scan time: ~{min_scan_time} seconds")
     
-    if SCAN_INTERVAL < min_scan_time:
-        logger.warning(f"⚠️  SCAN_INTERVAL too short! Setting to {min_scan_time + 60} seconds")
-        global SCAN_INTERVAL
-        SCAN_INTERVAL = min_scan_time + 60
+    # Adjust scan interval if needed
+    scan_interval = SCAN_INTERVAL
+    if scan_interval < min_scan_time:
+        scan_interval = min_scan_time + 60
+        logger.warning(f"⚠️  SCAN_INTERVAL too short! Using {scan_interval} seconds instead")
     
     # Test Telegram connection
     test_msg = send_telegram_message("🤖 Stock Scanner is now running!")
@@ -319,8 +320,8 @@ def main():
     while True:
         try:
             scan_stocks()
-            logger.info(f"⏳ Next scan in {SCAN_INTERVAL} seconds...")
-            time.sleep(SCAN_INTERVAL)
+            logger.info(f"⏳ Next scan in {scan_interval} seconds...")
+            time.sleep(scan_interval)
         except KeyboardInterrupt:
             logger.info("🛑 Scanner stopped by user")
             send_telegram_message("🛑 Stock Scanner stopped")
