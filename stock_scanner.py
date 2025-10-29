@@ -1,4 +1,3 @@
-import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
@@ -22,17 +21,19 @@ logger = logging.getLogger(__name__)
 # ===== CONFIGURATION FROM ENVIRONMENT =====
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
+ALPHAVANTAGE_API_KEY = os.getenv('ALPHAVANTAGE_API_KEY', '')
 PRICE_LIMIT = float(os.getenv('PRICE_LIMIT', '10.0'))
 SCAN_INTERVAL = int(os.getenv('SCAN_INTERVAL', '300'))
 
 # Validate configuration
 if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     logger.error("❌ TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set!")
-    logger.error("Please set environment variables when running docker")
     sys.exit(1)
 
-# Configure yfinance with better headers
-yf.set_tz_cache_location("/tmp/yfinance_cache")
+if not ALPHAVANTAGE_API_KEY:
+    logger.error("❌ ALPHAVANTAGE_API_KEY must be set!")
+    logger.error("Get free API key at: https://www.alphavantage.co/support/#api-key")
+    sys.exit(1)
 
 # Stock universe
 def load_watchlist():
@@ -48,11 +49,10 @@ def load_watchlist():
         except Exception as e:
             logger.error(f"Error reading watchlist file: {e}")
     
-    # Default watchlist
+    # Default watchlist - keep it small for free API limits
     return [
-        "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "AMD",
-        "NFLX", "DIS", "BABA", "INTC", "CSCO", "ORCL", "CRM", "ADBE",
-        "SNDL", "NAKD", "GNUS", "ATOS", "CLOV", "WISH"
+        "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", 
+        "NVDA", "META", "AMD", "NFLX", "DIS"
     ]
 
 WATCHLIST = load_watchlist()
@@ -71,6 +71,50 @@ def send_telegram_message(message):
         return response.json()
     except Exception as e:
         logger.error(f"Error sending Telegram message: {e}")
+        return None
+
+def fetch_stock_data(ticker):
+    """Fetch stock data from Alpha Vantage"""
+    try:
+        url = f"https://www.alphavantage.co/query"
+        params = {
+            "function": "TIME_SERIES_DAILY",
+            "symbol": ticker,
+            "outputsize": "full",
+            "apikey": ALPHAVANTAGE_API_KEY
+        }
+        
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Check for API limit
+        if "Note" in data:
+            logger.warning(f"API limit reached: {data['Note']}")
+            return None
+        
+        if "Error Message" in data:
+            logger.debug(f"Error for {ticker}: {data['Error Message']}")
+            return None
+        
+        if "Time Series (Daily)" not in data:
+            logger.debug(f"No data for {ticker}")
+            return None
+        
+        # Convert to DataFrame
+        time_series = data["Time Series (Daily)"]
+        df = pd.DataFrame.from_dict(time_series, orient='index')
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        
+        # Rename columns
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        df = df.astype(float)
+        
+        return df
+        
+    except Exception as e:
+        logger.debug(f"Error fetching {ticker}: {e}")
         return None
 
 def calculate_rsi(prices, period=14):
@@ -102,28 +146,14 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
 def analyze_stock(ticker):
     """Analyze a single stock using Pine Script logic"""
     try:
-        # Download data with retry logic
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                stock = yf.Ticker(ticker)
-                df = stock.history(period="3mo", interval="1d", timeout=10)
-                
-                if not df.empty and len(df) >= 50:
-                    break
-                    
-                if attempt < max_retries - 1:
-                    time.sleep(2)  # Wait before retry
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    logger.debug(f"Retry {attempt + 1} for {ticker}: {e}")
-                    time.sleep(2)
-                else:
-                    logger.debug(f"Failed to fetch {ticker} after {max_retries} attempts")
-                    return None
+        # Fetch data
+        df = fetch_stock_data(ticker)
         
-        if df.empty or len(df) < 50:
+        if df is None or df.empty or len(df) < 50:
             return None
+        
+        # Get recent data (last 90 days)
+        df = df.tail(90)
         
         close = df['Close']
         high = df['High']
@@ -221,8 +251,8 @@ def scan_stocks():
     successful_scans = 0
     failed_scans = 0
     
-    for ticker in WATCHLIST:
-        logger.info(f"Analyzing {ticker}...")
+    for i, ticker in enumerate(WATCHLIST, 1):
+        logger.info(f"[{i}/{len(WATCHLIST)}] Analyzing {ticker}...")
         signal = analyze_stock(ticker)
         
         if signal:
@@ -232,8 +262,10 @@ def scan_stocks():
         elif signal is None:
             failed_scans += 1
         
-        # Longer delay to avoid rate limiting
-        time.sleep(1.5)
+        # Alpha Vantage free tier: 5 requests/minute
+        # Wait 15 seconds between requests to be safe
+        if i < len(WATCHLIST):
+            time.sleep(15)
     
     logger.info(f"Scan complete: {successful_scans} successful, {failed_scans} failed")
     
@@ -264,6 +296,16 @@ def main():
     logger.info(f"📊 Monitoring {len(WATCHLIST)} stocks")
     logger.info(f"💰 Price limit: ${PRICE_LIMIT}")
     logger.info(f"⏰ Scan interval: {SCAN_INTERVAL} seconds")
+    logger.info(f"⚠️  Alpha Vantage free tier: 5 requests/min, 500/day")
+    
+    # Calculate minimum scan time
+    min_scan_time = len(WATCHLIST) * 15  # 15 seconds per stock
+    logger.info(f"⏱️  Minimum scan time: ~{min_scan_time} seconds")
+    
+    if SCAN_INTERVAL < min_scan_time:
+        logger.warning(f"⚠️  SCAN_INTERVAL too short! Setting to {min_scan_time + 60} seconds")
+        global SCAN_INTERVAL
+        SCAN_INTERVAL = min_scan_time + 60
     
     # Test Telegram connection
     test_msg = send_telegram_message("🤖 Stock Scanner is now running!")
